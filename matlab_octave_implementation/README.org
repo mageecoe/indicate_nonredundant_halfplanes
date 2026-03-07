@@ -1,0 +1,39 @@
+
+The code in this directory runs in both Matlab and Octave.
+* Matlab
+  The code should run as is in Matlab.
+* Octave
+  The code primarily uses standard MATLAB functions that are well-supported in
+  Octave:
+  - Basic linear algebra: matrix operations, QR decomposition, null space
+  - Array manipulation: logical indexing, slicing, concatenation
+  - Standard functions: find, size, norm, sortrows, flipud, etc.
+  - Flow control and function syntax are fully compatible
+
+** Potential Compatibility Issues
+   1. qrupdate function (used in active_set_solver.m:151, 202)
+      - This function updates QR factorizations efficiently
+      - Available in MATLAB by default
+      - In Octave, this is available but may require checking that it's
+        properly installed
+      - Modern Octave versions typically include this in core or easily
+        installable packages
+   2. linprog function (used only in documentation example at
+      active_set_solver.m:64)
+      - Part of MATLAB's Optimization Toolbox
+      - Would require Octave's optim package: pkg install -forge optim
+      - Not critical: only used in example code, not in the actual algorithm
+        implementation
+      - A drop-in replacement for linprog that calls GLPK is available.    
+   3. bsxfun function (used in normalize_halfplane_description.m:27,37 and
+      get_eq_and_ineq_constr.m:50)
+      - Available in Octave 3.6+
+      - Modern Octave versions support automatic broadcasting, making bsxfun
+        work seamlessly
+ 
+** To ensure full compatibility
+  The code should run on Octave with minimal to no modifications
+  1. Use Octave 4.0+ for best compatibility
+  2. Check qrupdate availability: Run which qrupdate in Octave to verify it's available
+  3. Optional: Install the optim package if you want to run the documentation examples
+     that use linprog

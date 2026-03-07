@@ -257,7 +257,7 @@ RedundancyResult PolytopeRedundancyRemover::indicate_nonredundant_halfplanes(
         int num_active = std::count(ind_active.begin(), ind_active.end(), true);
         if (num_active < n) {
             std::fill(ind_active.begin(), ind_active.end(), false);
-            x = Vector(n, 0.0);
+            x = Vector();
         }
         
         // Update nonredundant and remaining based on detected constraints
@@ -270,13 +270,26 @@ RedundancyResult PolytopeRedundancyRemover::indicate_nonredundant_halfplanes(
         
         // Handle symmetry
         if (is_symmetric) {
-            const int half = m / 2;
-            int j_mirror = (j + half) % m;
-            if (j_mirror < m_unique) {
-                ind_red[j_mirror] = ind_red[j];
-                ind_nred[j_mirror] = ind_nred[j];
-                ind_remain[j_mirror] = ind_remain[j];
-                ind_failed[j_mirror] = ind_failed[j];
+            const int half = m_unique / 2;
+            const int j_mirror = (j + half) % m_unique;
+
+            // One-directional copy for ind_red and ind_failed (matching Matlab)
+            ind_red[j_mirror] = ind_red[j];
+            ind_failed[j_mirror] = ind_failed[j];
+
+            // Bidirectional OR for ind_nred over all mirror pairs (matching Matlab)
+            for (int i = 0; i < half; ++i) {
+                bool combined = ind_nred[i] || ind_nred[i + half];
+                ind_nred[i] = combined;
+                ind_nred[i + half] = combined;
+            }
+
+            // One-directional copy for ind_remain, then bidirectional AND (matching Matlab)
+            ind_remain[j_mirror] = ind_remain[j];
+            for (int i = 0; i < half; ++i) {
+                bool combined = ind_remain[i] && ind_remain[i + half];
+                ind_remain[i] = combined;
+                ind_remain[i + half] = combined;
             }
         }
     }

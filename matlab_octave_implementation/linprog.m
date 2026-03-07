@@ -1,4 +1,4 @@
-## linprog.m  — simple drop-in replacement using glpk()
+## linprog.m  — simple drop-in replacement for Octave
 
 function [x, fval, exitflag, output] = linprog(f, A, b, Aeq, beq, lb, ub)
   % LINPROG  Linear programming via GLPK

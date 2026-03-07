@@ -394,9 +394,28 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
         }
         
         if (max_res > 1e-9) {
-            // Try direct solve (fallback)
-            // This would require implementing A_active \ b_active
-            // For now, keep current solution
+            // Check condition number via min diagonal of R (matching Matlab: rcond(A_active) < 1e-15)
+            double min_diag_r = std::numeric_limits<double>::max();
+            for (int i = 0; i < std::min(Q_R.R.rows(), Q_R.R.cols()); ++i) {
+                min_diag_r = std::min(min_diag_r, std::abs(Q_R.R(i, i)));
+            }
+            if (min_diag_r < 1e-15) {
+                result.optimal_found = false;
+                std::fill(active.begin(), active.end(), false);
+                result.active_constraints = active;
+                return result;
+            }
+            // Direct solve: x = A_active \ b_active (matching Matlab fallback)
+            Matrix A_active_solve = A_active;
+            Vector b_solve = b_active;
+            std::vector<int> ipiv(m_active);
+            int nrhs = 1;
+            int info = 0;
+            dgesv_(&m_active, &nrhs, A_active_solve.data(), &m_active, ipiv.data(),
+                   b_solve.data(), &m_active, &info);
+            if (info == 0) {
+                x = b_solve;
+            }
         }
         
         // Verify feasibility (MATLAB lines 229-234)

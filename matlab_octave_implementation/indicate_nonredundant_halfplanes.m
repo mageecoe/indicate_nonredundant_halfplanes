@@ -6,7 +6,7 @@ function [Amin, bmin, ind_minrep, ind_not_verified] = indicate_nonredundant_half
 %
 % For details about the algorithm, see the paper
 %
-% Emil Klintberg, Magnus Nilsson, Lars Johannesson Mårdh. "A primal
+% Emil Klintberg, Magnus Nilsson, Lars Johannesson Mardh. "A primal
 % active-set minimal representation algorithm for polytopes with
 % application to invariant-set calculations".
 %

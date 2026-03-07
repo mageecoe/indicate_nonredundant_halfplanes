@@ -221,20 +221,10 @@ BFSResult find_basic_feasible_solution(const Matrix& A, const Vector& b, const V
         }
     }
     
-    // Final verification
-    A.gemv(x, Ax);
-    int num_active_final = 0;
-    for (int i = 0; i < m; ++i) {
-        if (std::abs(Ax[i] - b[i]) < 1e-10) {
-            result.active_constraints[i] = true;
-            num_active_final++;
-        } else {
-            result.active_constraints[i] = false;
-        }
-    }
-    
+    // Loop exited without finding a full vertex — algorithm failed.
+    // Trust the explicitly tracked active set; do not sweep for numerically-close constraints.
     result.x = x;
-    result.success = (num_active_final >= n - 1); // Allow some tolerance
+    result.success = false;
     
     return result;
 }
