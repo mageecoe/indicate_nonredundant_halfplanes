@@ -30,6 +30,11 @@ extern "C" {
                  double* work, const int* lwork, int* info);
     void dorgqr_(const int* m, const int* n, const int* k, double* a, const int* lda,
                  const double* tau, double* work, const int* lwork, int* info);
+
+    // LAPACK triangular condition number estimator
+    void dtrcon_(const char* norm, const char* uplo, const char* diag,
+                 const int* n, const double* a, const int* lda,
+                 double* rcond, double* work, int* iwork, int* info);
 }
 
 namespace polytope_redundancy {
@@ -360,13 +365,27 @@ struct QRResult {
     bool success;
 };
 
-// Compute QR factorization of matrix A
-QRResult qr_factorization(const Matrix& A);
+// Compute QR factorization of matrix A.
+// If full_q is true, generate the full m×m Q (needed to read the null-space column
+// when A is n×(n-1)); otherwise generate the economy Q of size m×min(m,n).
+QRResult qr_factorization(const Matrix& A, bool full_q = false);
 
 // Solve linear system using QR factorization: solve R*x = Q'*b  
 Vector qr_solve(const QRResult& qr, const Vector& b);
 
 // Update QR factorization when adding/removing a row (simplified version)
 QRResult qr_update(const QRResult& qr_old, const Vector& new_row, bool add_row = true);
+
+// Rank-1 column replacement: update QR when column p of the factored matrix is replaced.
+// On input:  qr is the QR factorization of A (n x m, A = Q*R).
+//            a_new is the replacement column (n-vector).
+//            a_old is the old column being replaced (n-vector).
+//            p is the 0-based column index being replaced.
+// On output: updated QRResult (Givens-rotation based, O(n*m)).
+QRResult qr_column_replace(const QRResult& qr, const Vector& a_new,
+                           const Vector& a_old, int p);
+
+// Estimate reciprocal condition number of upper triangular R via LAPACK dtrcon.
+double rcond_triangular(const Matrix& R);
 
 } // namespace polytope_redundancy

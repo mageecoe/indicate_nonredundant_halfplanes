@@ -94,9 +94,8 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
     // QR factorization variables (matching MATLAB)
     QRResult Q_R;  // Main QR factorization
     QRResult Q_reduced_R_reduced; // Reduced QR factorization
-    std::vector<int> n_reduced; // Indices for reduced system
-    Matrix I = Matrix::identity(n);       // Identity matrix for QR updates
-    Matrix I_reduced; // Reduced identity matrix - initialize later with bounds check
+    std::vector<int> n_reduced; // Indices for reduced system (carries over between iterations)
+    int n_add_prev = -1; // n_add from previous iteration (for reduced QR column replace)
     
     // Main iteration loop (matching MATLAB structure)
     for (result.iterations = 0; result.iterations < max_iterations_; ++result.iterations) {
@@ -192,61 +191,40 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
         
         // Update reduced system for null space calculation (MATLAB lines 128-154)
         if (result.iterations == 0) {
-            // Find A_reduced (MATLAB lines 129-136)
-            Matrix A_reduced_temp(m_active, n);
+            // First iteration: build n_reduced and compute QR from scratch
             n_reduced.clear();
             for (int i = 0; i < m_active; ++i) {
                 if (n_active[i] != n_remove) {
-                    for (int j = 0; j < n; ++j) {
-                        A_reduced_temp(n_reduced.size(), j) = A(n_active[i], j);
-                    }
                     n_reduced.push_back(n_active[i]);
                 }
             }
-            
-            if (n_reduced.size() > 0) {
-                Matrix A_reduced(n_reduced.size(), n);
-                for (int i = 0; i < n_reduced.size(); ++i) {
+
+            if (!n_reduced.empty()) {
+                Matrix A_reduced_T(n, (int)n_reduced.size());
+                for (int i = 0; i < (int)n_reduced.size(); ++i) {
                     for (int j = 0; j < n; ++j) {
-                        A_reduced(i, j) = A_reduced_temp(i, j);
+                        A_reduced_T(j, i) = A(n_reduced[i], j);
                     }
                 }
-                
-                Matrix A_reduced_T(n, n_reduced.size());
-                for (int i = 0; i < n_reduced.size(); ++i) {
-                    for (int j = 0; j < n; ++j) {
-                        A_reduced_T(j, i) = A_reduced(i, j);
-                    }
-                }
-                Q_reduced_R_reduced = qr_factorization(A_reduced_T);
+                // Use full Q (n×n) so that Q[:,n-1] correctly gives the null-space direction
+                Q_reduced_R_reduced = qr_factorization(A_reduced_T, /*full_q=*/true);
             }
         } else {
-            // Update QR factorization for reduced system if needed (MATLAB lines 138-153)
-            // This would require implementing qrupdate functionality
-            // For now, recompute (less efficient but correct)
-            n_reduced.clear();
-            for (int i = 0; i < m_active; ++i) {
-                if (n_active[i] != n_remove) {
-                    n_reduced.push_back(n_active[i]);
+            // Later iterations: update reduced QR via Givens column replace when possible
+            // (matching Matlab: if any(n_reduced == n_active(n_remove)))
+            auto it = std::find(n_reduced.begin(), n_reduced.end(), n_remove);
+            if (Q_reduced_R_reduced.success && n_add_prev >= 0 && it != n_reduced.end()) {
+                // n_remove was in n_reduced: replace its column with n_add_prev
+                int p = std::distance(n_reduced.begin(), it);
+                Vector a_new_col(n), a_old_col(n);
+                for (int j = 0; j < n; ++j) {
+                    a_new_col[j] = A(n_add_prev, j);
+                    a_old_col[j] = A(n_remove, j);
                 }
+                Q_reduced_R_reduced = qr_column_replace(Q_reduced_R_reduced, a_new_col, a_old_col, p);
+                n_reduced[p] = n_add_prev;
             }
-            
-            if (n_reduced.size() > 0) {
-                Matrix A_reduced(n_reduced.size(), n);
-                for (int i = 0; i < n_reduced.size(); ++i) {
-                    for (int j = 0; j < n; ++j) {
-                        A_reduced(i, j) = A(n_reduced[i], j);
-                    }
-                }
-                
-                Matrix A_reduced_T(n, n_reduced.size());
-                for (int i = 0; i < n_reduced.size(); ++i) {
-                    for (int j = 0; j < n; ++j) {
-                        A_reduced_T(j, i) = A_reduced(i, j);
-                    }
-                }
-                Q_reduced_R_reduced = qr_factorization(A_reduced_T);
-            }
+            // else: n_remove == n_add_prev, so n_reduced is unchanged; reuse Q_reduced_R_reduced
         }
         
         // Calculate search direction in null space (MATLAB line 157)
@@ -334,15 +312,8 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
         }
         b_active[n_remove_idx] = b_add;
         
-        // Update QR factorization (MATLAB line 202)
-        // For now, recompute QR factorization (would need qrupdate for efficiency)
-        Matrix A_active_T_updated(n, m_active);
-        for (int i = 0; i < m_active; ++i) {
-            for (int j = 0; j < n; ++j) {
-                A_active_T_updated(j, i) = A_active(i, j);
-            }
-        }
-        Q_R = qr_factorization(A_active_T_updated);
+        // Update QR factorization via Givens rank-1 column replacement (matching Matlab qrupdate)
+        Q_R = qr_column_replace(Q_R, a_add, a_remove, n_remove_idx);
         
         if (!Q_R.success) {
             result.optimal_found = false;
@@ -351,13 +322,8 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
             return result;
         }
         
-        // Check condition number (MATLAB lines 206-210)
-        // Approximate condition check by looking at diagonal elements
-        double min_diag = std::numeric_limits<double>::max();
-        for (int i = 0; i < std::min(Q_R.R.rows(), Q_R.R.cols()); ++i) {
-            min_diag = std::min(min_diag, std::abs(Q_R.R(i, i)));
-        }
-        if (min_diag < 1e-15) {
+        // Check condition number via proper rcond estimate (matching Matlab: rcond(R))
+        if (rcond_triangular(Q_R.R) < 1e-15) {
             result.optimal_found = false;
             std::fill(active.begin(), active.end(), false);
             result.active_constraints = active;
@@ -394,12 +360,8 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
         }
         
         if (max_res > 1e-9) {
-            // Check condition number via min diagonal of R (matching Matlab: rcond(A_active) < 1e-15)
-            double min_diag_r = std::numeric_limits<double>::max();
-            for (int i = 0; i < std::min(Q_R.R.rows(), Q_R.R.cols()); ++i) {
-                min_diag_r = std::min(min_diag_r, std::abs(Q_R.R(i, i)));
-            }
-            if (min_diag_r < 1e-15) {
+            // Check condition number via proper rcond estimate (matching Matlab: rcond(A_active) < 1e-15)
+            if (rcond_triangular(Q_R.R) < 1e-15) {
                 result.optimal_found = false;
                 std::fill(active.begin(), active.end(), false);
                 result.active_constraints = active;
@@ -435,6 +397,9 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
             result.active_constraints = active;
             return result;
         }
+
+        // Save n_add for use in next iteration's reduced QR update
+        n_add_prev = n_add;
     }
     
     // Check if maximum iterations reached (MATLAB lines 239-243)

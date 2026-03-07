@@ -153,30 +153,32 @@ BFSResult find_basic_feasible_solution(const Matrix& A, const Vector& b, const V
             }
         }
         
-        QRResult qr = qr_factorization(A_active_T);
+        // Use full Q (n×n) so Q[:,n-1] is the null-space direction and Q[:,0:num_active-1]
+        // spans the column space of A_active_T.
+        QRResult qr = qr_factorization(A_active_T, /*full_q=*/true);
         if (!qr.success) {
             return result; // QR factorization failed
         }
-        
+
         // Calculate intermediate point x_approx = x + min_t * s (matching MATLAB)
         Vector x_approx = x;
         x_approx.axpy(min_t, s);
-        
+
         // Compute residual res_approx = A_active * x_approx - b_active
         Vector b_active(num_active);
         for (int i = 0; i < num_active; ++i) {
             b_active[i] = b[active_indices[i]];
         }
-        
+
         Vector res_approx(num_active);
         A_active.gemv(x_approx, res_approx);
         for (int i = 0; i < num_active; ++i) {
             res_approx[i] -= b_active[i];
         }
-        
+
         // Project back to satisfy active constraints: x = x_approx - Q1*(R1'\res_approx)
         // This matches MATLAB: x = x_approx - Q1*( R1' \ res_approx )
-        
+
         // Solve R1' * y = res_approx using forward substitution
         Vector y(num_active, 0.0);
         for (int i = 0; i < num_active; ++i) {
@@ -184,21 +186,24 @@ BFSResult find_basic_feasible_solution(const Matrix& A, const Vector& b, const V
             for (int j = 0; j < i; ++j) {
                 sum -= qr.R(j, i) * y[j];  // R'(i,j) = R(j,i)
             }
-            
+
             if (std::abs(qr.R(i, i)) < 1e-15) {
                 return result; // Singular matrix
             }
-            
+
             y[i] = sum / qr.R(i, i);
         }
-        
-        // Compute Q1 * y and subtract from x_approx
+
+        // Compute Q1 * y and subtract from x_approx.
+        // Q is full n×n; pad y to n to multiply only the first num_active columns.
+        Vector y_full(n, 0.0);
+        for (int i = 0; i < num_active; ++i) y_full[i] = y[i];
         Vector Q1_y(n, 0.0);
-        qr.Q.gemv(y, Q1_y, 1.0, 0.0, false); // Q * y (Q1 is first num_active columns)
-        
+        qr.Q.gemv(y_full, Q1_y, 1.0, 0.0, false); // Q * [y; 0] = Q1 * y
+
         x = x_approx;
         x.axpy(-1.0, Q1_y); // x = x_approx - Q1*y
-        
+
         // Check feasibility (matching MATLAB safety check)
         A.gemv(x, Ax);
         for (int i = 0; i < m; ++i) {
@@ -206,14 +211,14 @@ BFSResult find_basic_feasible_solution(const Matrix& A, const Vector& b, const V
                 return result; // Primal feasibility lost
             }
         }
-        
+
         // Calculate new search direction from null space (matching MATLAB)
-        // s = Q2(:,end) where Q2 are the last n-num_active columns of Q
+        // s = Q2(:,end) where Q2 are the last n-num_active columns of Q.
+        // With full Q, the null-space column is Q[:,n-1].
         if (num_active < n) {
-            // Use the last column of Q as search direction
             s = Vector(n);
             for (int j = 0; j < n; ++j) {
-                s[j] = qr.Q(j, n - 1); // Last column of Q
+                s[j] = qr.Q(j, n - 1); // Last column of full Q
             }
         } else {
             // Full rank - should terminate

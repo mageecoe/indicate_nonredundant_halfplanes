@@ -268,50 +268,65 @@ Vector row_norms(const Matrix& A) {
     return A.row_norms();
 }
 
-QRResult qr_factorization(const Matrix& A) {
+QRResult qr_factorization(const Matrix& A, bool full_q) {
     QRResult result;
     result.success = false;
-    
+
     const int m = A.rows();
     const int n = A.cols();
     const int min_mn = std::min(m, n);
-    
-    // Copy A since LAPACK modifies the input matrix
-    result.Q = A; // Will be overwritten with Q
-    result.R = Matrix(min_mn, n); // R is min(m,n) x n
+    // When full_q requested, Q has m columns; otherwise economy Q has min_mn columns.
+    const int q_cols = full_q ? m : min_mn;
+
+    // Copy A for dgeqrf (LAPACK overwrites the input)
+    Matrix A_copy = A;
     result.tau = Vector(min_mn);
-    
+
     // Workspace query
     int lwork = -1;
     double work_query;
     int info = 0;
-    
-    dgeqrf_(&m, &n, result.Q.data(), &m, result.tau.data(), &work_query, &lwork, &info);
-    
-    if (info != 0) {
-        return result;
-    }
-    
+    dgeqrf_(&m, &n, A_copy.data(), &m, result.tau.data(), &work_query, &lwork, &info);
+    if (info != 0) return result;
+
     lwork = static_cast<int>(work_query);
     Vector work(lwork);
-    
-    // Actual QR factorization
-    dgeqrf_(&m, &n, result.Q.data(), &m, result.tau.data(), work.data(), &lwork, &info);
-    
-    if (info != 0) {
-        return result;
+
+    // Actual QR factorization (stores Householder reflectors in A_copy)
+    dgeqrf_(&m, &n, A_copy.data(), &m, result.tau.data(), work.data(), &lwork, &info);
+    if (info != 0) return result;
+
+    // Extract R (upper triangular part of the factored matrix)
+    result.R = Matrix(min_mn, n);
+    for (int i = 0; i < min_mn; ++i)
+        for (int j = i; j < n; ++j)
+            result.R(i, j) = A_copy(i, j);
+
+    // Build Q: for full Q, pad the factored matrix to m x m before calling dorgqr
+    result.Q = Matrix(m, q_cols, 0.0);
+    for (int j = 0; j < n && j < q_cols; ++j)
+        for (int i = 0; i < m; ++i)
+            result.Q(i, j) = A_copy(i, j);
+    if (n < q_cols) {
+        // Zero-pad remaining columns (already zero from Matrix constructor)
+        // dorgqr needs the identity in columns n..q_cols-1 to extend Q
+        for (int j = n; j < q_cols; ++j)
+            if (j < m) result.Q(j, j) = 1.0;
     }
-    
-    // Extract R matrix (upper triangular part)
-    for (int i = 0; i < min_mn; ++i) {
-        for (int j = i; j < n; ++j) {
-            result.R(i, j) = result.Q(i, j);
-        }
+
+    // Workspace query for dorgqr
+    {
+        int lwork2 = -1;
+        double work_query2;
+        dorgqr_(&m, &q_cols, &min_mn, result.Q.data(), &m,
+                result.tau.data(), &work_query2, &lwork2, &info);
+        if (info != 0) return result;
+        lwork2 = static_cast<int>(work_query2);
+        Vector work2(lwork2);
+        dorgqr_(&m, &q_cols, &min_mn, result.Q.data(), &m,
+                result.tau.data(), work2.data(), &lwork2, &info);
     }
-    
-    // Generate explicit Q matrix
-    dorgqr_(&m, &min_mn, &min_mn, result.Q.data(), &m, result.tau.data(), work.data(), &lwork, &info);
-    
+
     result.success = (info == 0);
     return result;
 }
@@ -351,6 +366,72 @@ Vector qr_solve(const QRResult& qr, const Vector& b) {
     }
     
     return x;
+}
+
+QRResult qr_column_replace(const QRResult& qr, const Vector& a_new, const Vector& a_old, int p) {
+    if (!qr.success) return QRResult{};
+
+    QRResult result = qr;
+    const int n      = result.Q.rows();   // rows of the factored matrix
+    const int q_cols = result.Q.cols();   // Q columns: m for economy, n for full Q
+    const int m      = result.R.cols();   // columns of the factored matrix (= m_active)
+
+    if (p < 0 || p >= m || a_new.size() != n || a_old.size() != n) return QRResult{};
+
+    // u = a_new - a_old
+    Vector u(n);
+    for (int i = 0; i < n; ++i)
+        u[i] = a_new[i] - a_old[i];
+
+    // w = Q^T * u  (q_cols-vector; use Q.cols() to match gemv dimension requirement)
+    Vector w(q_cols);
+    result.Q.gemv(u, w, 1.0, 0.0, true);
+
+    // R[:, p] += w[:m]  (rank-1 update; w may be longer than m when Q is full)
+    for (int i = 0; i < m; ++i)
+        result.R(i, p) += w[i];
+
+    // Restore upper triangular form via Givens rotations, bottom to top
+    for (int k = m - 1; k > p; --k) {
+        const double a_val = result.R(k - 1, p);
+        const double b_val = result.R(k,     p);
+
+        if (std::abs(b_val) < 1e-15) continue;  // already zero
+
+        const double r = std::hypot(a_val, b_val);
+        const double c = a_val / r;
+        const double s = b_val / r;
+
+        // Apply Givens rotation to rows k-1 and k of R (columns p..m-1)
+        for (int j = p; j < m; ++j) {
+            const double r_km1 = result.R(k - 1, j);
+            const double r_k   = result.R(k,     j);
+            result.R(k - 1, j) =  c * r_km1 + s * r_k;
+            result.R(k,     j) = -s * r_km1 + c * r_k;
+        }
+
+        // Apply G^T to columns k-1 and k of Q (rows 0..n-1)
+        for (int i = 0; i < n; ++i) {
+            const double q_km1 = result.Q(i, k - 1);
+            const double q_k   = result.Q(i, k);
+            result.Q(i, k - 1) =  c * q_km1 + s * q_k;
+            result.Q(i, k)     = -s * q_km1 + c * q_k;
+        }
+    }
+
+    result.success = true;
+    return result;
+}
+
+double rcond_triangular(const Matrix& R) {
+    int n = R.rows();
+    if (n == 0) return 0.0;
+    double rcond_val = 0.0;
+    Vector work(3 * n);
+    std::vector<int> iwork(n);
+    int info = 0;
+    dtrcon_("1", "U", "N", &n, R.data(), &n, &rcond_val, work.data(), iwork.data(), &info);
+    return (info == 0) ? rcond_val : 0.0;
 }
 
 QRResult qr_update(const QRResult& qr_old, const Vector& new_row, bool add_row) {

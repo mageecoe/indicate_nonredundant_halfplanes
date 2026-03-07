@@ -50,20 +50,23 @@ TEST_CASE("Core redundancy removal algorithm", "[core]") {
         b[2] = 1.0;
         b[3] = 0.0;
         
+        // Interior point for unit square [0,1]^2
+        Vector z(2); z[0] = 0.5; z[1] = 0.5;
+
         PolytopeRedundancyRemover solver;
-        auto result = solver.indicate_nonredundant_halfplanes(A, b);
-        
+        auto result = solver.indicate_nonredundant_halfplanes(A, b, std::vector<bool>(), z);
+
         REQUIRE(result.success == true);
-        
+
         // All constraints should be non-redundant
         for (int i = 0; i < 4; ++i) {
             REQUIRE(result.redundant_indices[i] == false);
         }
-        
+
         // Should have same number of constraints
         REQUIRE(result.A_min.rows() == 4);
     }
-    
+
     SECTION("Multiple redundant constraints") {
         // Create a case with multiple redundant constraints
         Matrix A(6, 2);
@@ -82,11 +85,14 @@ TEST_CASE("Core redundancy removal algorithm", "[core]") {
         b[4] = 1.0;
         b[5] = 0.0;
         
+        // Interior point for [0,1]^2
+        Vector z(2); z[0] = 0.5; z[1] = 0.5;
+
         PolytopeRedundancyRemover solver;
-        auto result = solver.indicate_nonredundant_halfplanes(A, b);
-        
+        auto result = solver.indicate_nonredundant_halfplanes(A, b, std::vector<bool>(), z);
+
         REQUIRE(result.success == true);
-        
+
         // Constraints 1 and 2 should be redundant (looser x bounds)
         REQUIRE(result.redundant_indices[1] == true);
         REQUIRE(result.redundant_indices[2] == true);
@@ -135,11 +141,14 @@ TEST_CASE("Core redundancy removal algorithm", "[core]") {
         b[2] = 1.0; b[3] = 0.0;
         b[4] = 1.0; b[5] = 0.0;
         
+        // Interior point for unit cube [0,1]^3
+        Vector z(3); z[0] = 0.5; z[1] = 0.5; z[2] = 0.5;
+
         PolytopeRedundancyRemover solver;
-        auto result = solver.indicate_nonredundant_halfplanes(A, b);
-        
+        auto result = solver.indicate_nonredundant_halfplanes(A, b, std::vector<bool>(), z);
+
         REQUIRE(result.success == true);
-        
+
         // All constraints should be necessary for the unit cube
         for (int i = 0; i < 6; ++i) {
             REQUIRE(result.redundant_indices[i] == false);

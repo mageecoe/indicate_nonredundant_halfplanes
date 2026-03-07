@@ -3,6 +3,7 @@
 #include "polytope_redundancy/core.hpp"
 #include "polytope_redundancy/qhull_solver.hpp"
 #include <chrono>
+#include <iostream>
 #include <random>
 
 using namespace polytope_redundancy;

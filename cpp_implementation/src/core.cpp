@@ -32,31 +32,35 @@ RedundancyResult PolytopeRedundancyRemover::indicate_nonredundant_halfplanes(
     Vector z = interior_point;
     bool should_shift_back = false;
     const double b_tol = 1e-10;
-    
-    // Check feasibility
+
     Vector Az(m);
-    if (z.size() == n) {
+
+    // Check if origin is already interior (matching Matlab: any(b < b_tol))
+    bool origin_interior = true;
+    for (int i = 0; i < m; ++i) {
+        if (b[i] < b_tol) { origin_interior = false; break; }
+    }
+
+    if (!origin_interior) {
+        // Origin is not interior; a valid interior point z must be provided
+        if (z.size() != n) return result;
         A.gemv(z, Az);
         for (int i = 0; i < m; ++i) {
-            if (b[i] - Az[i] < b_tol) {
-                return result; // Interior point not valid
-            }
+            if (b[i] - Az[i] < b_tol) return result; // z not interior
         }
         should_shift_back = true;
-    } else {
-        // Check if origin is interior
+    } else if (z.size() == n) {
+        // Origin is interior; validate z is feasible but do not shift
+        A.gemv(z, Az);
         for (int i = 0; i < m; ++i) {
-            if (b[i] < b_tol) {
-                return result; // Origin not interior and no point provided
-            }
+            if (b[i] - Az[i] < b_tol) return result;
         }
-        z = Vector(n, 0.0);
     }
-    
-    // Shift constraints if needed
+
+    // Shift constraints if needed (only when origin is not interior)
     Matrix A_work = A;
     Vector b_work = b;
-    
+
     if (should_shift_back) {
         for (int i = 0; i < m; ++i) {
             b_work[i] -= Az[i];

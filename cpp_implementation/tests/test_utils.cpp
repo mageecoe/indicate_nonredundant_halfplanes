@@ -3,6 +3,7 @@
 #include "polytope_redundancy/geometry.hpp"
 
 using namespace polytope_redundancy;
+using Catch::Approx;
 
 TEST_CASE("Vector operations", "[vector]") {
     SECTION("Construction and basic operations") {
