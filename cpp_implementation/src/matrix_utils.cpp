@@ -77,9 +77,11 @@ SymmetricResult make_set_symmetric(const Matrix& H, const Vector& h, double tol)
         J[i] = i;
     }
     
-    std::sort(J.begin(), J.end(), [&](int a, int b) {
+    // Exact lexicographic comparison (a tolerance would break the strict weak
+    // ordering std::sort requires); stable like sortrows.
+    std::stable_sort(J.begin(), J.end(), [&](int a, int b) {
         for (int j = 0; j <= H.cols(); ++j) {
-            if (std::abs(Hh(a, j) - Hh(b, j)) > 1e-12) {
+            if (Hh(a, j) != Hh(b, j)) {
                 return Hh(a, j) < Hh(b, j);
             }
         }
@@ -103,10 +105,10 @@ SymmetricResult make_set_symmetric(const Matrix& H, const Vector& h, double tol)
     }
     
     // Flip lower part: Hhs(lower,:) = flipud(Hhs(lower, :))
-    for (int i = 0; i < half; ++i) {
+    for (int i = 0; i < half / 2; ++i) {
         int src_idx = nrows - 1 - i;   // flipud source index
         int dst_idx = half + i;        // destination index
-        
+
         // Swap rows in Hhs
         for (int j = 0; j <= H.cols(); ++j) {
             std::swap(Hhs(dst_idx, j), Hhs(src_idx, j));
@@ -371,53 +373,71 @@ Vector qr_solve(const QRResult& qr, const Vector& b) {
 QRResult qr_column_replace(const QRResult& qr, const Vector& a_new, const Vector& a_old, int p) {
     if (!qr.success) return QRResult{};
 
-    QRResult result = qr;
-    const int n      = result.Q.rows();   // rows of the factored matrix
-    const int q_cols = result.Q.cols();   // Q columns: m for economy, n for full Q
-    const int m      = result.R.cols();   // columns of the factored matrix (= m_active)
+    const int n = qr.Q.rows();   // rows of the factored matrix
+    const int m = qr.R.cols();   // columns of the factored matrix
 
     if (p < 0 || p >= m || a_new.size() != n || a_old.size() != n) return QRResult{};
 
-    // u = a_new - a_old
+    // The rank-1 update needs a square Q. With an economy Q (n > m) the update
+    // can leave span(Q), so refactorize from scratch instead.
+    if (qr.Q.cols() != n) {
+        Matrix A(n, m);
+        qr.Q.gemm(qr.R, A);
+        for (int i = 0; i < n; ++i) A(i, p) = a_new[i];
+        return qr_factorization(A);
+    }
+
+    // Work on Q (n x n) and the full R (n x m); R may be stored with fewer rows
+    // (e.g. full_q with n > m), in which case the missing rows are zero.
+    QRResult result;
+    result.Q = qr.Q;
+    result.R = Matrix(n, m);
+    for (int i = 0; i < qr.R.rows(); ++i)
+        for (int j = 0; j < m; ++j)
+            result.R(i, j) = qr.R(i, j);
+
+    // Applies the Givens rotation zeroing b in (a, b) to rows i, k of R
+    // (columns j0..m-1), columns i, k of Q, and optionally entries i, k of w.
+    auto rotate = [&](int i, int k, double a, double b, int j0, Vector* w) {
+        if (b == 0.0) return;
+        const double r = std::hypot(a, b);
+        const double c = a / r;
+        const double s = b / r;
+        for (int j = j0; j < m; ++j) {
+            const double ri = result.R(i, j), rk = result.R(k, j);
+            result.R(i, j) =  c * ri + s * rk;
+            result.R(k, j) = -s * ri + c * rk;
+        }
+        for (int row = 0; row < n; ++row) {
+            const double qi = result.Q(row, i), qk = result.Q(row, k);
+            result.Q(row, i) =  c * qi + s * qk;
+            result.Q(row, k) = -s * qi + c * qk;
+        }
+        if (w) {
+            const double wi = (*w)[i], wk = (*w)[k];
+            (*w)[i] =  c * wi + s * wk;
+            (*w)[k] = -s * wi + c * wk;
+        }
+    };
+
+    // A_new = A + u e_p' with u = a_new - a_old, so Q' A_new = R + w e_p', w = Q' u.
+    // Golub & Van Loan, Sec. 12.5.1 (same algorithm as Matlab's qrupdate).
     Vector u(n);
     for (int i = 0; i < n; ++i)
         u[i] = a_new[i] - a_old[i];
-
-    // w = Q^T * u  (q_cols-vector; use Q.cols() to match gemv dimension requirement)
-    Vector w(q_cols);
+    Vector w(n);
     result.Q.gemv(u, w, 1.0, 0.0, true);
 
-    // R[:, p] += w[:m]  (rank-1 update; w may be longer than m when Q is full)
-    for (int i = 0; i < m; ++i)
-        result.R(i, p) += w[i];
+    // 1. Reduce w to a multiple of e_1, bottom to top; R becomes upper Hessenberg.
+    for (int k = n - 1; k > 0; --k)
+        rotate(k - 1, k, w[k - 1], w[k], 0, &w);
 
-    // Restore upper triangular form via Givens rotations, bottom to top
-    for (int k = m - 1; k > p; --k) {
-        const double a_val = result.R(k - 1, p);
-        const double b_val = result.R(k,     p);
+    // 2. Add the rank-1 term, which now only touches row 0.
+    result.R(0, p) += w[0];
 
-        if (std::abs(b_val) < 1e-15) continue;  // already zero
-
-        const double r = std::hypot(a_val, b_val);
-        const double c = a_val / r;
-        const double s = b_val / r;
-
-        // Apply Givens rotation to rows k-1 and k of R (columns p..m-1)
-        for (int j = p; j < m; ++j) {
-            const double r_km1 = result.R(k - 1, j);
-            const double r_k   = result.R(k,     j);
-            result.R(k - 1, j) =  c * r_km1 + s * r_k;
-            result.R(k,     j) = -s * r_km1 + c * r_k;
-        }
-
-        // Apply G^T to columns k-1 and k of Q (rows 0..n-1)
-        for (int i = 0; i < n; ++i) {
-            const double q_km1 = result.Q(i, k - 1);
-            const double q_k   = result.Q(i, k);
-            result.Q(i, k - 1) =  c * q_km1 + s * q_k;
-            result.Q(i, k)     = -s * q_km1 + c * q_k;
-        }
-    }
+    // 3. Restore upper triangular form by zeroing the subdiagonal.
+    for (int k = 0; k < std::min(n - 1, m); ++k)
+        rotate(k, k + 1, result.R(k, k), result.R(k + 1, k), k, nullptr);
 
     result.success = true;
     return result;

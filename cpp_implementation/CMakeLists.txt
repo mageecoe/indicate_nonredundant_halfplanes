@@ -83,6 +83,7 @@ if(Catch2_FOUND)
         tests/test_main.cpp
         tests/test_utils.cpp
         tests/test_core.cpp
+        tests/test_regressions.cpp
     )
     
     # Add qhull tests if available

@@ -126,12 +126,9 @@ BFSResult find_basic_feasible_solution(const Matrix& A, const Vector& b, const V
                     return result;
                 }
             }
-            
-            // Fallback: Check conditioning like MATLAB
-            // We can't easily compute rcond without additional LAPACK routines
-            // So we'll just return what we have
+
+            // Active set is singular: x is not a vertex
             result.x = x;
-            result.success = true;
             return result;
         }
         

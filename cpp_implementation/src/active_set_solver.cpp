@@ -73,11 +73,18 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
     // Initialize active set - use BFS if not provided (matching MATLAB logic)
     Vector x = x_init;
     std::vector<bool> active = active_init;
+
+    // Failure exit (matching Matlab: optimal_solution_found = false, ind_active = false)
+    auto fail = [&]() {
+        result.optimal_found = false;
+        result.active_constraints.assign(m, false);
+        return result;
+    };
     
     if (x_init.size() != n || std::all_of(active.begin(), active.end(), [](bool a) { return !a; })) {
         BFSResult bfs = find_basic_feasible_solution(A, b);
         if (!bfs.success) {
-            return result; // Cannot find initial feasible solution
+            return fail(); // Cannot find initial feasible solution
         }
         x = bfs.x;
         active = bfs.active_constraints;
@@ -130,7 +137,7 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
             }
             Q_R = qr_factorization(A_active_T);
             if (!Q_R.success) {
-                return result; // QR factorization failed
+                return fail(); // QR factorization failed
             }
         }
         
@@ -147,10 +154,7 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
             }
             
             if (std::abs(Q_R.R(i, i)) < 1e-15) {
-                result.optimal_found = false;
-                std::fill(active.begin(), active.end(), false);
-                result.active_constraints = active;
-                return result;
+                return fail();
             }
             
             mu[i] = sum / Q_R.R(i, i);
@@ -269,30 +273,25 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
             }
         }
         
-        // Find minimum positive step size (MATLAB line 178)
-        double min_t = std::numeric_limits<double>::max();
+        // Find minimum step size (MATLAB line 178). Like Matlab, negative step
+        // sizes are kept so that a slightly violated halfplane is added at once.
+        double min_t = std::numeric_limits<double>::infinity();
         int n_add = -1;
         for (int i = 0; i < m; ++i) {
-            if (step_sizes[i] >= 0 && step_sizes[i] < min_t) {
+            if (step_sizes[i] < min_t) {
                 min_t = step_sizes[i];
                 n_add = i;
             }
         }
         
         // Check for infinite step (MATLAB lines 181-183)
-        if (std::isinf(min_t)) {
-            result.optimal_found = false;
-            std::fill(active.begin(), active.end(), false);
-            result.active_constraints = active;
-            return result;
+        if (n_add == -1) {
+            return fail(); // Unbounded direction
         }
         
         // Check for duplicate constraint (MATLAB lines 185-187)
         if (std::find(n_active.begin(), n_active.end(), n_add) != n_active.end()) {
-            result.optimal_found = false;
-            std::fill(active.begin(), active.end(), false);
-            result.active_constraints = active;
-            return result;
+            return fail();
         }
         
         // Update active constraints (MATLAB lines 194-199)
@@ -316,18 +315,12 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
         Q_R = qr_column_replace(Q_R, a_add, a_remove, n_remove_idx);
         
         if (!Q_R.success) {
-            result.optimal_found = false;
-            std::fill(active.begin(), active.end(), false);
-            result.active_constraints = active;
-            return result;
+            return fail();
         }
         
         // Check condition number via proper rcond estimate (matching Matlab: rcond(R))
         if (rcond_triangular(Q_R.R) < 1e-15) {
-            result.optimal_found = false;
-            std::fill(active.begin(), active.end(), false);
-            result.active_constraints = active;
-            return result;
+            return fail();
         }
         
         // Update solution x = Q * (R' \ b_active) (MATLAB line 213)
@@ -339,10 +332,7 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
             }
             
             if (std::abs(Q_R.R(i, i)) < 1e-15) {
-                result.optimal_found = false;
-                std::fill(active.begin(), active.end(), false);
-                result.active_constraints = active;
-                return result;
+                return fail();
             }
             
             y[i] = sum / Q_R.R(i, i);
@@ -360,14 +350,9 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
         }
         
         if (max_res > 1e-9) {
-            // Check condition number via proper rcond estimate (matching Matlab: rcond(A_active) < 1e-15)
-            if (rcond_triangular(Q_R.R) < 1e-15) {
-                result.optimal_found = false;
-                std::fill(active.begin(), active.end(), false);
-                result.active_constraints = active;
-                return result;
-            }
-            // Direct solve: x = A_active \ b_active (matching Matlab fallback)
+            // Direct solve: x = A_active \ b_active (matching Matlab fallback).
+            // Quit if A_active is (close to) singular. Matlab checks rcond(A_active) < 1e-15;
+            // here it is estimated from the LU factor U returned by dgesv.
             Matrix A_active_solve = A_active;
             Vector b_solve = b_active;
             std::vector<int> ipiv(m_active);
@@ -375,8 +360,16 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
             int info = 0;
             dgesv_(&m_active, &nrhs, A_active_solve.data(), &m_active, ipiv.data(),
                    b_solve.data(), &m_active, &info);
-            if (info == 0) {
-                x = b_solve;
+            if (info != 0 || rcond_triangular(A_active_solve) < 1e-15) {
+                return fail();
+            }
+            x = b_solve;
+
+            // Recompute residual for the corrected x (MATLAB line 229)
+            A_active.gemv(x, Ax_check);
+            max_res = 0.0;
+            for (int i = 0; i < m_active; ++i) {
+                max_res = std::max(max_res, std::abs(Ax_check[i] - b_active[i]));
             }
         }
         
@@ -392,10 +385,7 @@ ActiveSetResult ActiveSetSolver::solve(const Vector& f, const Matrix& A, const V
         }
         
         if (!feasible) {
-            result.optimal_found = false;
-            std::fill(active.begin(), active.end(), false);
-            result.active_constraints = active;
-            return result;
+            return fail();
         }
 
         // Save n_add for use in next iteration's reduced QR update

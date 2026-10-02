@@ -381,7 +381,9 @@ QRResult qr_update(const QRResult& qr_old, const Vector& new_row, bool add_row =
 //            a_new is the replacement column (n-vector).
 //            a_old is the old column being replaced (n-vector).
 //            p is the 0-based column index being replaced.
-// On output: updated QRResult (Givens-rotation based, O(n*m)).
+// On output: updated QRResult (Givens-rotation based like Matlab's qrupdate,
+//            O(n*(n+m))). Requires a square Q; R is returned as n x m.
+//            With an economy Q the factorization is recomputed instead.
 QRResult qr_column_replace(const QRResult& qr, const Vector& a_new,
                            const Vector& a_old, int p);
 
